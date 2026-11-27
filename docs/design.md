@@ -276,6 +276,34 @@ never routed out of the host's IP. All isolation rules above apply unchanged
 on the tunnel path. Free VPN tiers often allow one connection per account, so
 no other client may use the same config.
 
+### 7.4 Sleep mode
+
+A bay that always runs holds its RAM whether anyone uses it or not (about
+4.5 GiB each on the reference host). With `sleepAfter = <minutes>`
+in the site, `modules/sleep.nix` stops the VM while it is idle and starts it
+on demand:
+
+- cloudflared sends the bay's hostname to a wake address on the host
+  (`127.180.0.<octet>:13773`, loopback only) instead of to the bay. The Access
+  check in cloudflared comes first and is unchanged. cloudflared may reach
+  only that address for the bay, and requires the socket: if it cannot be
+  bound, the tunnel does not start (something else on the host could answer
+  there otherwise). The port is not T3's on purpose, since a T3 server on the
+  host itself listens on every address.
+- The first connection starts `microvm@bay-<name>` through systemd socket
+  activation, waits until T3 serves pages and relays
+  (`systemd-socket-proxyd`). Measured: about 10 s from request to page.
+- Every 5 minutes an idle check runs. The bay is in use while a connection
+  has been open in the last 10 minutes (an open T3 tab holds one) or the VM's
+  CPU use since the last check is above 5 % of one core (an idle bay sits at
+  about 1 %; this keeps a bay awake while agents work with the browser
+  closed). After `sleepAfter` idle minutes the VM is shut down cleanly.
+- The bay does not start at host boot. Its volume stays; processes do not.
+  A VPN tunnel of the bay stays up on the host.
+
+Stopping was chosen over pausing or a balloon: only a stopped VM gives all of
+its RAM back, and a bay boots in seconds.
+
 ## 8. What is inside a bay (NixOS guest module)
 
 - Claude Code (unmodified), T3 Code (`t3 serve` bound to the bay address),

@@ -50,6 +50,12 @@
   #                   never a Nix path), run on the host; if the tunnel is down the
   #                   bay has no internet at all. Without it the bay leaves from the
   #                   uplink (the host's public address).
+  #   sleepAfter      optional: idle minutes (15 .. 10080) after which the bay is
+  #                   shut down, so it holds no RAM while nobody uses it. In use
+  #                   means an open T3 connection or agents working (VM CPU above
+  #                   idle). The first request to its URL starts it again (about
+  #                   15 s); files on the volume stay, running processes do not.
+  #                   Without it the bay runs all the time.
   #
   # There is no other way into a bay: no port on the host's LAN or VPN
   # addresses leads into one.
@@ -78,6 +84,8 @@
         gitlabSubs = [ "0" ]; # placeholder
       };
       egress.wireguardConfig = "/var/lib/agent-garage/egress/bob.conf";
+      # Stopped after an idle hour, started again by the next request.
+      sleepAfter = 60;
     };
   };
 }

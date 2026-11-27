@@ -74,6 +74,31 @@ rec {
   egressTable = bay: 1000 + lastOctet bay;
   egressRulePriority = bay: 4000 + lastOctet bay;
 
+  # Sleep mode (bays with `sleepAfter`, modules/sleep.nix): the VM is stopped
+  # after that many idle minutes and started again by the first request to
+  # its wake address, a loopback address of the host (127.180.0.<octet>).
+  sleep = {
+    # Port of the wake addresses. Not the T3 port: a T3 server running on the
+    # host itself listens on every address, loopback ones included.
+    wakePort = 13773;
+    # The relay to T3 exits after this long without an open connection.
+    relayIdle = "10min";
+    # How often the idle check runs.
+    checkMinutes = 5;
+    # VM CPU (percent of one core, averaged between two checks) from which a
+    # bay counts as busy; an idle bay sits at about 1.
+    busyCpuPercent = 5;
+  };
+  sleepBays = lib.filterAttrs (_: b: (b.sleepAfter or null) != null);
+  sleeps = bay: (bay.sleepAfter or null) != null;
+  wakeAddress = bay: "127.180.0.${toString (lastOctet bay)}";
+  wakeUnitName = name: "garage-wake-${name}";
+  sleepUnitName = name: "garage-sleep-${name}";
+  # Where cloudflared sends a bay's requests: the bay, or its wake address.
+  originAddress = bay: if sleeps bay then wakeAddress bay else bay.ipv4;
+  origin =
+    bay: "http://${originAddress bay}:${toString (if sleeps bay then sleep.wakePort else t3Port)}";
+
   # vsock ports served inside a bay, reachable only from the host (CID 2).
   vsockPorts = {
     pair = 7001;
@@ -188,6 +213,10 @@ rec {
             message = "agent-garage: bay '${name}': egress must be null or { wireguardConfig = \"/absolute/path/outside/the/store.conf\"; } (a string, not a Nix path)";
           }
           {
+            assertion = (b.sleepAfter or null) == null || intIn 15 10080 b.sleepAfter;
+            message = "agent-garage: bay '${name}': sleepAfter must be null or 15 .. 10080 (idle minutes before the bay is stopped)";
+          }
+          {
             assertion = lib.all (lib.flip lib.elem [
               "ipv4"
               "mac"
@@ -196,6 +225,7 @@ rec {
               "volumeGiB"
               "public"
               "egress"
+              "sleepAfter"
             ]) (lib.attrNames b);
             message = "agent-garage: bay '${name}' has unknown attributes";
           }

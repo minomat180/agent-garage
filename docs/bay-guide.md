@@ -29,6 +29,11 @@ Only your own GitLab account can open it.
   For more tools, use a flake in your project (`nix develop`, `nix shell`).
 - The bay can be restarted for updates (announced in advance). Running
   processes stop; files in `/home` stay.
+- Your bay may sleep when you have not used it for a while. Opening its
+  address wakes it; the first page then takes about 10 seconds. It stays awake
+  while a T3 tab is open or your agents are working. Files in `/home` stay;
+  anything still running when it falls asleep (a `tmux` session, a dev server)
+  is gone, like after a restart.
 
 ## Accounts and keys: always your own
 

@@ -2,6 +2,9 @@
 #
 #   garage status          bays, units, public URLs
 #   garage pair <bay>      print a one-time T3 pairing link for the bay (15 min)
+#   garage wake <bay>      start a sleeping bay now and wait until T3 answers
+#   garage sleep <bay>     shut a bay with sleep mode down now (it wakes on the
+#                          next request to its URL)
 #   garage test <bay>      run the acceptance tests (docs/design.md section 11); for a
 #                          bay with VPN egress this stops its tunnel for about
 #                          half a minute (kill switch test) and restores it
@@ -52,15 +55,60 @@ egress_field() {
   cfg --arg b "$1" --arg f "$2" '.bays[$b].egress[$f] // empty'
 }
 
+sleep_field() {
+  # sleep_field <bay> <field>: empty for a bay without sleep mode
+  # shellcheck disable=SC2016 # jq variables
+  cfg --arg b "$1" --arg f "$2" '.bays[$b].sleep[$f] // empty'
+}
+
+# wake_bay <bay>: make sure the bay runs and T3 answers. A bay with sleep mode
+# is started through its wake unit, like a request from outside would.
+wake_bay() {
+  local b=$1 wake ip
+  wake=$(sleep_field "$b" wakeUnit)
+  [ -n "$wake" ] || return 0
+  ip=$(bay_field "$b" ipv4)
+  if ! systemctl is-active --quiet "microvm@$(bay_field "$b" vm).service" || ! tcp_open "$ip" "$(cfg .t3Port)"; then
+    echo "waking $b ..." >&2
+    systemctl start "$wake" || die "could not wake '$b' (journalctl -u $wake)"
+  fi
+}
+
+cmd_wake() {
+  need_root wake
+  local b=${1:-}
+  [ -n "$b" ] || die "usage: garage wake <bay>"
+  check_bay "$b"
+  [ -n "$(sleep_field "$b" wakeUnit)" ] || die "bay '$b' has no sleep mode (it always runs)"
+  wake_bay "$b"
+  echo "$b is awake; it sleeps again after $(sleep_field "$b" after) idle minutes"
+}
+
+cmd_sleep() {
+  need_root sleep
+  local b=${1:-}
+  [ -n "$b" ] || die "usage: garage sleep <bay>"
+  check_bay "$b"
+  [ -n "$(sleep_field "$b" wakeUnit)" ] || die "bay '$b' has no sleep mode (nothing would wake it again)"
+  systemctl stop "microvm@$(bay_field "$b" vm).service"
+  echo "$b is asleep; the next request to $(bay_field "$b" publicUrl) wakes it"
+}
+
 cmd_status() {
-  local b vm eg
+  local b vm eg sl
   for b in $(cfg '.bays | keys[]'); do
     vm=$(bay_field "$b" vm)
     eg=uplink
     [ -z "$(egress_field "$b" tunnel)" ] ||
       eg="$(egress_field "$b" tunnel):$(systemctl is-active "$(egress_field "$b" unit)" || true)"
-    printf '%s  vm=%s  ip=%s  microvm=%s  public=%s  egress=%s\n' "$b" "$vm" "$(bay_field "$b" ipv4)" \
-      "$(systemctl is-active "microvm@$vm.service" || true)" "$(bay_field "$b" publicUrl)" "$eg"
+    sl=off
+    if [ -n "$(sleep_field "$b" after)" ]; then
+      sl="$(sleep_field "$b" after)min:awake"
+      systemctl is-active --quiet "microvm@$vm.service" || sl="$(sleep_field "$b" after)min:asleep"
+      systemctl is-active --quiet "$(sleep_field "$b" socketUnit)" || sl="$sl,wake-socket-down"
+    fi
+    printf '%s  vm=%s  ip=%s  microvm=%s  public=%s  egress=%s  sleep=%s\n' "$b" "$vm" "$(bay_field "$b" ipv4)" \
+      "$(systemctl is-active "microvm@$vm.service" || true)" "$(bay_field "$b" publicUrl)" "$eg" "$sl"
   done
   printf 'bridge=%s nftables=%s cloudflared=%s\n' "$(systemctl is-active garage-bridge.service || true)" \
     "$(systemctl is-active garage-nftables.service || true)" \
@@ -82,6 +130,7 @@ cmd_pair() {
   local enc_bay enc_url
   enc_bay="http%3A%2F%2F$ip%3A$t3port"
   enc_url=$(printf '%s' "$url" | sed 's#:#%3A#g; s#/#%2F#g')
+  wake_bay "$b"
   vsock_call "$b" "$(cfg .vsockPorts.pair)" </dev/null |
     grep -v -e '▀' -e '▄' -e '█' |
     sed "s#http://$ip:$t3port#$url#g; s#$enc_bay#$enc_url#g"
@@ -219,10 +268,13 @@ public_checks() {
   else
     result FAIL ingress-valid "$conf"
   fi
-  if cloudflared tunnel --config "$conf" ingress rule "https://$host/" 2>&1 | grep -q "service: http://$ip:$t3port"; then
-    result PASS ingress-bay "$host -> $ip:$t3port"
+  # The bay itself, or for a bay with sleep mode its wake address on the host.
+  local origin
+  origin=$(bay_field "$b" origin)
+  if cloudflared tunnel --config "$conf" ingress rule "https://$host/" 2>&1 | grep -qx "[[:space:]]*service: $origin"; then
+    result PASS ingress-bay "$host -> $origin"
   else
-    result FAIL ingress-bay "$host does not route to $ip:$t3port"
+    result FAIL ingress-bay "$host does not route to $origin"
   fi
   # shellcheck disable=SC2016 # jq variables
   aud=$(jq -r --arg h "$host" '.ingress[] | select(.hostname == $h) | .originRequest.access | select(.required == true) | .audTag | join(",")' "$conf")
@@ -450,11 +502,68 @@ ks_collect() {
   fi
 }
 
+# Sleep mode: the wake address is loopback only and leads to this bay's T3;
+# the bay does not start at boot; the idle check is scheduled. The bay is not
+# put to sleep here (that would end whatever runs in it); `garage sleep` and
+# `garage wake` do that on request.
+sleep_checks() {
+  local b=$1 addr port sock wake timer vm listen others code cf
+  addr=$(sleep_field "$b" address)
+  echo "== sleep mode"
+  if [ -z "$addr" ]; then
+    result INFO sleep "no sleep mode for $b (always running)"
+    return 0
+  fi
+  sock=$(sleep_field "$b" socketUnit)
+  wake=$(sleep_field "$b" wakeUnit)
+  timer=$(sleep_field "$b" timerUnit)
+  port=$(sleep_field "$b" port)
+  cf=$(cfg .public.unit)
+  vm=$(bay_field "$b" vm)
+  for u in "$sock" "$timer"; do
+    if systemctl is-active --quiet "$u"; then result PASS unit-active "$u"; else result FAIL unit-active "$u $(systemctl is-active "$u" || true)"; fi
+  done
+  if [[ $addr == 127.* ]]; then result PASS wake-loopback "wake address $addr is a loopback address"; else result FAIL wake-loopback "wake address $addr is not loopback"; fi
+  listen=$(systemctl show -p Listen --value "$sock")
+  if [ "$listen" = "$addr:$port (Stream)" ]; then
+    result PASS wake-listen "$sock listens on $listen only"
+  else
+    result FAIL wake-listen "$sock listens on '$listen'"
+  fi
+  # Nothing else listens on the wake port: not on another address, and the
+  # listener on the wake address is systemd's socket (or its relay).
+  # shellcheck disable=SC2016 # awk variables
+  others=$(ss -H -ltn "sport = :$port" | awk '{print $4}' | grep -v '^127\.180\.0\.[0-9]*:' | tr '\n' ' ' || true)
+  if [ -z "$others" ]; then result PASS wake-only-loopback "port $port open on wake addresses only"; else result FAIL wake-only-loopback "also on: $others"; fi
+  # Fail closed: without the wake socket the tunnel must not run.
+  if [ -n "$(bay_field "$b" publicUrl)" ]; then
+    if systemctl show -p Requires --value "$cf" | tr ' ' '\n' | grep -qx "$sock"; then
+      result PASS wake-required "$cf requires $sock"
+    else
+      result FAIL wake-required "$cf runs without $sock"
+    fi
+  fi
+  if systemctl show -p Wants --value microvms.target | tr ' ' '\n' | grep -qx "microvm@$vm.service"; then
+    result FAIL sleep-no-autostart "microvm@$vm starts at boot"
+  else
+    result PASS sleep-no-autostart "microvm@$vm starts on request, not at boot"
+  fi
+  code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 150 "http://$addr:$port/" 2>/dev/null) || code=000
+  if [ "$code" = 200 ]; then result PASS wake-relay "http://$addr:$port HTTP $code (relayed to the bay)"; else result FAIL wake-relay "http://$addr:$port HTTP $code"; fi
+  if systemctl is-active --quiet "$wake"; then result PASS unit-active "$wake"; else result FAIL unit-active "$wake $(systemctl is-active "$wake" || true)"; fi
+  if systemctl cat "$cf" 2>/dev/null | grep '^IPAddressAllow=' | grep -qw "$(bay_field "$b" ipv4)/32"; then
+    result FAIL sleep-cloudflared "$cf may still reach the bay directly"
+  else
+    result PASS sleep-cloudflared "$cf reaches $b only through $addr"
+  fi
+}
+
 cmd_test() {
   need_root test
   local b=${1:-}
   [ -n "$b" ] || die "usage: garage test <bay>"
   check_bay "$b"
+  wake_bay "$b"
   local vm ip uplink gw_br t3port tap
   vm=$(bay_field "$b" vm)
   ip=$(bay_field "$b" ipv4)
@@ -505,9 +614,17 @@ cmd_test() {
   echo "== no LAN or tailnet way in (Cloudflare Access only)"
   # No socket proxy may listen on the host for a bay, and no NAT rule may
   # forward to one.
-  local listen_pids
-  listen_pids=$(pgrep -f "systemd-socket-proxyd .*$(cfg .network.cidr | cut -d. -f1-3 | sed 's/\./\\./g')\\." | tr '\n' ' ' || true)
-  if [ -z "$listen_pids" ]; then result PASS no-socket-proxy "no socket proxy to a bay running"; else result FAIL no-socket-proxy "pids: $listen_pids"; fi
+  # The one exception is the wake relay of a bay with sleep mode, which
+  # listens on a loopback address only (checked below).
+  local listen_pids="" p_ wake_units
+  wake_units=$(cfg '[.bays[].sleep | select(. != null) | .wakeUnit] | join(" ")')
+  for p_ in $(pgrep -f "systemd-socket-proxyd .*$(cfg .network.cidr | cut -d. -f1-3 | sed 's/\./\\./g')\\." || true); do
+    case " $wake_units " in
+      *" $(ps -o unit= -p "$p_" | tr -d ' ') "*) ;;
+      *) listen_pids="$listen_pids$p_ " ;;
+    esac
+  done
+  if [ -z "$listen_pids" ]; then result PASS no-socket-proxy "no socket proxy to a bay running (wake relays aside)"; else result FAIL no-socket-proxy "pids: $listen_pids"; fi
   if nft list ruleset 2>/dev/null | grep -E 'dnat|redirect' | grep -qF "$(cfg .network.cidr | cut -d. -f1-3)."; then
     result FAIL no-forwarding "an nftables dnat/redirect rule points into the bay network"
   else
@@ -519,6 +636,7 @@ cmd_test() {
 
   public_checks "$b"
   egress_checks "$b"
+  sleep_checks "$b"
 
   echo "== other bay (stand-in on the bridge)"
   trap neighbor_down EXIT
@@ -670,7 +788,7 @@ cmd_test() {
 
   echo "== sandboxing of the garage units (systemd-analyze security)"
   local units
-  units="garage-bridge.service garage-nftables.service microvm@$vm.service $(egress_field "$b" unit)"
+  units="garage-bridge.service garage-nftables.service microvm@$vm.service $(egress_field "$b" unit) $(sleep_field "$b" wakeUnit)"
   for u in $units; do
     result INFO security "$u $(systemd-analyze security --no-pager "$u" 2>/dev/null | tail -n1 | sed 's/.*Overall exposure level for [^:]*: //')"
   done
@@ -713,6 +831,8 @@ cmd_test() {
 case "${1:-}" in
   status) cmd_status ;;
   pair) shift; cmd_pair "$@" ;;
+  wake) shift; cmd_wake "$@" ;;
+  sleep) shift; cmd_sleep "$@" ;;
   test) shift; cmd_test "$@" ;;
-  *) die "usage: garage status | garage pair <bay> | garage test <bay>" ;;
+  *) die "usage: garage status | garage pair <bay> | garage wake <bay> | garage sleep <bay> | garage test <bay>" ;;
 esac

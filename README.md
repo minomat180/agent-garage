@@ -53,6 +53,9 @@ whole thing; everything specific to an installation lives in one site file.
 - **Optional VPN egress per bay.** A bay can leave through a WireGuard tunnel
   that runs on the host, with a kill switch in routing and in nftables, so its
   agents' traffic never comes from the home IP.
+- **Optional sleep mode per bay.** A bay nobody uses is shut down after a set
+  idle time and holds no RAM; the next request to its URL starts it again in
+  about 10 seconds.
 - **Everyone uses their own accounts.** Each friend signs in to Claude Code
   (or another provider) with their own subscription or API key, as
   [Anthropic's terms](https://code.claude.com/docs/en/legal-and-compliance)
@@ -146,6 +149,12 @@ For VPN egress, put a wg-quick config (an IPv4 /32 `Address`, `Endpoint` as
 IPv4:port) at `/var/lib/agent-garage/egress/<bay>.conf` (root, mode 600,
 directory 700) and add `egress.wireguardConfig` to that bay in the site.
 
+For sleep mode, add `sleepAfter = <idle minutes>;` to a bay in the site. The
+bay then starts on its first request instead of at boot, and is shut down once
+it has had no open T3 connection and no CPU use above idle for that long.
+Files stay; processes running in the bay end when it sleeps. `sudo garage
+sleep <bay>` and `sudo garage wake <bay>` do it by hand.
+
 ## How it works
 
 ```text
@@ -162,6 +171,7 @@ host (NixOS)
   garage-cloudflared   hostname -> bay:3773, Access JWT checked again, 404 for anything else
   garage-nftables      bays -> public internet only
   garage-egress-<bay>  optional WireGuard tunnel for one bay, with kill switch
+  garage-wake-<bay>    optional sleep mode: loopback address that starts the bay on a request
   |
   +-- bay-<name>   microVM: own kernel, own store image, 100 GiB volume
   |                T3 Code server on the bay address, Claude Code, git, gh, glab, Nix
@@ -176,6 +186,7 @@ host (NixOS)
 | `modules/host.nix` | microvm.nix host, bridge, nftables, systemd sandboxing, the `garage` command |
 | `modules/public.nix` | cloudflared for the public bays |
 | `modules/egress.nix` | WireGuard egress, policy routing, kill switch |
+| `modules/sleep.nix` | sleep mode: wake address, relay, idle check |
 | `infra/cloudflare/` | OpenTofu for the tunnel, Access, DNS and HSTS; `garage-cf` runs it |
 | `pkgs/t3.nix` | T3 Code server, the official release pinned by sha256 |
 | `guest/bay-rules.md` | installed as `~/.claude/CLAUDE.md` in every bay |
@@ -238,7 +249,7 @@ nix flake check   # evaluates the host module, builds both example bays, shellch
 nix fmt -- --check $(git ls-files '*.nix')
 nix run nixpkgs#statix -- check . && nix run nixpkgs#deadnix -- --fail .
 nix run nixpkgs#gitleaks -- git .
-garage status               # bays, units, public URLs, egress
+garage status               # bays, units, public URLs, egress, asleep or awake
 sudo garage test <bay>      # acceptance tests on the live host
 ```
 
@@ -257,7 +268,7 @@ also stops the tunnel, removes the routing rule, and checks that nothing left
 through the uplink; that cuts the bay's internet for about 30 seconds. Run one
 `garage test` at a time: two runs share the stand-in bay and interfere.
 
-The last run on the host for the bay without VPN egress: `SUMMARY pass=123 fail=0`; for the bay with VPN egress, `SUMMARY pass=152 fail=0`.
+The last run on the host for the bay without VPN egress: `SUMMARY pass=123 fail=0`; for the bay with VPN egress and sleep mode, `SUMMARY pass=162 fail=0`.
 
 ## Status and limits
 

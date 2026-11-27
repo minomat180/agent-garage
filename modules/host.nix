@@ -215,6 +215,21 @@ let
         vm = garage.vmName name;
         tap = garage.tapName b;
         inherit (b) ipv4;
+        # Sleep mode (modules/sleep.nix), or null: the bay always runs.
+        sleep =
+          if garage.sleeps b then
+            {
+              after = b.sleepAfter;
+              address = garage.wakeAddress b;
+              port = garage.sleep.wakePort;
+              wakeUnit = "${garage.wakeUnitName name}.service";
+              socketUnit = "${garage.wakeUnitName name}.socket";
+              timerUnit = "${garage.sleepUnitName name}.timer";
+            }
+          else
+            null;
+        # Where cloudflared sends the bay's hostname.
+        origin = garage.origin b;
         publicUrl =
           if config.garage.public.enable && (b.public or null) != null then
             "https://${garage.publicHostname b}"
@@ -343,6 +358,7 @@ in
     microvmHost
     (import ./public.nix { inherit garage bays outputs; })
     (import ./egress.nix { inherit garage bays netAdminSandbox; })
+    (import ./sleep.nix { inherit garage bays; })
   ];
 
   options.garage = {
@@ -371,7 +387,8 @@ in
         lib.nameValuePair (garage.vmName name) {
           evaluatedConfig = bayConfigs.${garage.vmName name};
           restartIfChanged = true;
-          autostart = true;
+          # A bay with sleep mode starts on its first request, not at boot.
+          autostart = !garage.sleeps bays.${name};
         }
       ) bays;
 
