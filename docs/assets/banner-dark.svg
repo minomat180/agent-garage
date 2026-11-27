@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 320" width="1280" height="320" role="img" aria-label="agent-garage: Isolated agent workspaces for friends on one NixOS host">
+  <rect x="0.5" y="0.5" width="1279" height="319" rx="12" fill="#0d1117" stroke="#30363d"/>
+  <rect x="80" y="96" width="56" height="6" fill="#f0883e"/>
+  <text x="80" y="196" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-weight="700" font-size="84" fill="#e6edf3">agent-garage</text>
+  <text x="80" y="248" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-weight="400" font-size="24" fill="#8b949e">Isolated agent workspaces for friends on one NixOS host</text>
+  <!-- motif: three roll-up bay doors, the middle one half open on a prompt -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+    <polyline points="906,82 1050,46 1194,82" stroke="#8b949e"/>
+    <line x1="900" y1="250" x2="1200" y2="250" stroke="#8b949e"/>
+    <polyline points="912,250 912,96 996,96 996,250" stroke="#8b949e"/>
+    <line x1="920" y1="108" x2="988" y2="108" stroke="#f0883e"/>
+    <line x1="920" y1="122" x2="988" y2="122" stroke="#f0883e"/>
+    <line x1="920" y1="136" x2="988" y2="136" stroke="#f0883e"/>
+    <line x1="920" y1="150" x2="988" y2="150" stroke="#f0883e"/>
+    <line x1="920" y1="164" x2="988" y2="164" stroke="#f0883e"/>
+    <line x1="920" y1="178" x2="988" y2="178" stroke="#f0883e"/>
+    <line x1="920" y1="192" x2="988" y2="192" stroke="#f0883e"/>
+    <line x1="920" y1="206" x2="988" y2="206" stroke="#f0883e"/>
+    <line x1="920" y1="220" x2="988" y2="220" stroke="#f0883e"/>
+    <line x1="920" y1="234" x2="988" y2="234" stroke="#f0883e"/>
+    <polyline points="1008,250 1008,96 1092,96 1092,250" stroke="#8b949e"/>
+    <line x1="1016" y1="108" x2="1084" y2="108" stroke="#f0883e"/>
+    <line x1="1016" y1="122" x2="1084" y2="122" stroke="#f0883e"/>
+    <line x1="1016" y1="136" x2="1084" y2="136" stroke="#f0883e"/>
+    <line x1="1016" y1="150" x2="1084" y2="150" stroke="#f0883e"/>
+    <line x1="1012" y1="172" x2="1088" y2="172" stroke="#f0883e"/>
+    <line x1="1044" y1="178" x2="1056" y2="178" stroke="#f0883e"/>
+    <polyline points="1032,203 1042,213 1032,223" stroke="#f0883e"/>
+    <line x1="1050" y1="223" x2="1066" y2="223" stroke="#f0883e"/>
+    <polyline points="1104,250 1104,96 1188,96 1188,250" stroke="#8b949e"/>
+    <line x1="1112" y1="108" x2="1180" y2="108" stroke="#f0883e"/>
+    <line x1="1112" y1="122" x2="1180" y2="122" stroke="#f0883e"/>
+    <line x1="1112" y1="136" x2="1180" y2="136" stroke="#f0883e"/>
+    <line x1="1112" y1="150" x2="1180" y2="150" stroke="#f0883e"/>
+    <line x1="1112" y1="164" x2="1180" y2="164" stroke="#f0883e"/>
+    <line x1="1112" y1="178" x2="1180" y2="178" stroke="#f0883e"/>
+    <line x1="1112" y1="192" x2="1180" y2="192" stroke="#f0883e"/>
+    <line x1="1112" y1="206" x2="1180" y2="206" stroke="#f0883e"/>
+    <line x1="1112" y1="220" x2="1180" y2="220" stroke="#f0883e"/>
+    <line x1="1112" y1="234" x2="1180" y2="234" stroke="#f0883e"/>
+  </g>
+</svg>

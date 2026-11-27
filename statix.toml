@@ -1,0 +1,2 @@
+# Topic-grouped modules repeat top-level keys (systemd, networking) on purpose.
+disabled = ["repeated_keys"]

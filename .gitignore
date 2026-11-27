@@ -1,0 +1,18 @@
+result
+result-*
+# OpenTofu: state, plans, provider cache and credentials never enter git
+# (state lives in ~/.local/state/agent-garage/tofu, see infra/cloudflare/garage-cf).
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
+credentials.json
+*.tmp
+# Site values (bays, GitLab ids, Cloudflare ids, outputs.json) live outside the
+# repo, e.g. /etc/nixos/agent-garage/; examples/site/ shows the format.
+/infra/cloudflare/outputs.json
+/site/

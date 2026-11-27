@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# garage-cf: run OpenTofu for infra/cloudflare with the state outside the repo.
+#
+#   infra/cloudflare/garage-cf init | plan | apply | <any tofu subcommand>
+#   infra/cloudflare/garage-cf export               write outputs.json next to site.nix (tunnel id, AUD tags; not secret)
+#   infra/cloudflare/garage-cf install-credentials  write the tunnel credentials to a root-only file (sudo)
+#   infra/cloudflare/garage-cf status               tunnel status and connection count from the API
+#
+# Inputs come from the site (bays and Cloudflare constants) at
+# $GARAGE_SITE/site.nix (default /etc/nixos/agent-garage/site.nix; format:
+# examples/site/site.nix), evaluated with this repo's `lib.tofuVars`.
+# The API token is read from $GARAGE_CF_TOKEN_FILE (default
+# ~/.config/agent-garage/cloudflare-api-token) straight into the environment of
+# the command that needs it; it is never printed. State, plans and provider
+# binaries live in $GARAGE_CF_STATE_DIR (default
+# ~/.local/state/agent-garage/tofu, mode 700, files 600).
+
+set -euo pipefail
+umask 077
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repo=$(cd "$here/../.." && pwd)
+state_dir=${GARAGE_CF_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-garage/tofu}
+token_file=${GARAGE_CF_TOKEN_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/agent-garage/cloudflare-api-token}
+cred_file=/var/lib/agent-garage/cloudflared/credentials.json
+site_dir=${GARAGE_SITE:-/etc/nixos/agent-garage}
+
+die() {
+  printf 'garage-cf: %s\n' "$*" >&2
+  exit 1
+}
+
+mkdir -p "$state_dir"
+chmod 700 "$state_dir"
+export TF_DATA_DIR="$state_dir/.terraform"
+export TF_IN_AUTOMATION=1
+export TF_INPUT=0
+
+tofu() {
+  # Same pinned nixpkgs as the rest of the repo.
+  nix run --inputs-from "$repo" nixpkgs#opentofu -- -chdir="$here" "$@"
+}
+
+with_token() {
+  [ -r "$token_file" ] || die "no API token at $token_file"
+  [ "$(stat -c %a "$token_file")" = 600 ] || die "$token_file must be mode 600"
+  CLOUDFLARE_API_TOKEN="$(<"$token_file")" "$@"
+}
+
+site_vars() {
+  # The site is outside the repo, so this one evaluation is impure; the path
+  # is checked first because it ends up in a Nix expression.
+  [[ $site_dir =~ ^/[A-Za-z0-9._/-]+$ ]] || die "GARAGE_SITE must be an absolute path without special characters"
+  [ -r "$site_dir/site.nix" ] || die "no site at $site_dir/site.nix (see examples/site/site.nix)"
+  # Only tracked files of the repo are visible to the flake: `git add` first.
+  nix eval --impure --json "$repo#lib.tofuVars" --apply "f: f (import $site_dir/site.nix)"
+}
+
+vars() {
+  TF_VAR_garage=$(site_vars)
+  export TF_VAR_garage
+}
+
+cmd_export() {
+  local out="$site_dir/outputs.json" tmp
+  tmp=$(mktemp)
+  tofu output -json public | nix run --inputs-from "$repo" nixpkgs#jq -- -S . >"$tmp"
+  # The site directory usually belongs to root (/etc/nixos).
+  if [ -w "$site_dir" ]; then
+    install -m 0644 "$tmp" "$out"
+  else
+    sudo install -m 0644 -o root -g root "$tmp" "$out"
+  fi
+  rm -f "$tmp"
+  echo "wrote $out (commit it with the site)"
+}
+
+cmd_install_credentials() {
+  # tofu output -raw goes straight into the root-only file; nothing is echoed.
+  sudo install -d -m 0700 -o root -g root "$(dirname "$cred_file")"
+  tofu output -raw tunnel_credentials |
+    sudo sh -c 'umask 077; cat >"$1.tmp" && chown root:root "$1.tmp" && chmod 0400 "$1.tmp" && mv -f "$1.tmp" "$1"' sh "$cred_file"
+  echo "installed $cred_file ($(sudo stat -c '%U:%G %a' "$cred_file"))"
+}
+
+cmd_status() {
+  local account tunnel
+  account=$(site_vars | nix run --inputs-from "$repo" nixpkgs#jq -- -r .account_id)
+  tunnel=$(nix run --inputs-from "$repo" nixpkgs#jq -- -r .tunnel_id "$site_dir/outputs.json")
+  [[ $tunnel =~ ^[0-9a-f-]{36}$ ]] || die "no tunnel id in outputs.json"
+  [ -r "$token_file" ] || die "no API token at $token_file"
+  # The header reaches curl through a pipe (printf is a builtin), not argv.
+  curl -sS --fail-with-body -H @<(printf 'Authorization: Bearer %s\n' "$(<"$token_file")") \
+    "https://api.cloudflare.com/client/v4/accounts/$account/cfd_tunnel/$tunnel" |
+    nix run --inputs-from "$repo" nixpkgs#jq -- '.result | {name, status, connections: (.connections | length), colos: ([.connections[].colo_name] | unique)}'
+}
+
+case "${1:-}" in
+  "") die "usage: garage-cf <tofu subcommand> | export | install-credentials | status" ;;
+  export) cmd_export ;;
+  install-credentials) cmd_install_credentials ;;
+  status) cmd_status ;;
+  init)
+    shift
+    tofu init -backend-config="path=$state_dir/terraform.tfstate" "$@"
+    ;;
+  *)
+    vars
+    with_token tofu "$@"
+    # Keep the state (and its backup) owner-only.
+    find "$state_dir" -maxdepth 1 -type f -name '*.tfstate*' -exec chmod 600 {} +
+    ;;
+esac

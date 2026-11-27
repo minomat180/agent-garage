@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Filter for the README recording: replaces this host's own identifiers in
+# `garage` output with labels (addresses, tailnet, domain, GitLab ids, AUD
+# tags, host and user name; the bay $DEMO_BAY is shown as $DEMO_BAY_LABEL
+# (default: its own name), every other bay as friend, friend2, ...). The values are looked up at run time, so none of them
+# is stored in the repo. Lines are cut to the terminal width.
+#
+#   sudo garage test <bay> 2>&1 | DEMO_BAY=<bay> DEMO_BAY_LABEL=alice docs/demo/redact
+set -euo pipefail
+export LC_ALL=C
+
+cols=${DEMO_COLS:-$(tput cols 2>/dev/null || echo 120)}
+uplink=$(ip -4 route show default | awk '{print $5; exit}')
+host=$(hostname)
+user=${SUDO_USER:-${USER:-}}
+public=$(curl -4 -sS --max-time 10 https://api.ipify.org/ 2>/dev/null | tr -cd '0-9.' || true)
+tsip=$(tailscale ip -4 2>/dev/null | head -n1 || true)
+magic=$(tailscale status --json 2>/dev/null | jq -r '.MagicDNSSuffix // empty' || true)
+lanips=$(ip -4 -o addr show dev "$uplink" | awk '{split($4, a, "/"); print a[1]}')
+langw=$(ip -4 route show default | awk '{print $3; exit}')
+cfg=$(sed -n 's/^GARAGE_CONFIG=//p' "$(readlink -f "$(command -v garage)")" | head -n1)
+zone=$(jq -r '[.bays[].publicUrl // empty][0] // empty' "$cfg" | sed -E 's#https://[^.]+\.##')
+subs=$(jq -r '[.bays[].gitlabSubs[]] | join(" ")' "$cfg")
+
+esc() { printf '%s' "$1" | sed 's#[.[\*^$/]#\\&#g'; }
+args=()
+add() { [ -n "$1" ] && args+=(-e "s/$(esc "$1")/$2/gI"); return 0; }
+add "$public" '<public-ip>'
+add "$tsip" '<tailnet-ip>'
+add "$magic" '<tailnet>.ts.net'
+for a in $lanips; do add "$a" '<lan-ip>'; done
+add "$langw" '<lan-gateway>'
+add "$zone" 'example.com'
+add "$(jq -r '.public.authDomain // empty' "$cfg" | sed 's/\.cloudflareaccess\.com$//')" '<team>'
+tunnel=$(jq -r '.tunnel // empty' "$(jq -r '.public.configFile // empty' "$cfg")" 2>/dev/null || true)
+add "$tunnel" '<tunnel-id>'
+for s in $subs; do add "$s" '<gitlab-id>'; done
+add "$host" '<hostname>'
+add "/home/$user" '\/home\/<user>'
+[ -n "$user" ] && args+=(-e "s/'$(esc "$user")'/'<user>'/g")
+n=0
+for b in $(jq -r '.bays | keys[]' "$cfg"); do
+  if [ "$b" = "${DEMO_BAY:-}" ]; then
+    [ -n "${DEMO_BAY_LABEL:-}" ] && args+=(-e "s/\\b$(esc "$b")\\b/$DEMO_BAY_LABEL/g")
+    continue
+  fi
+  n=$((n + 1))
+  label=friend
+  [ "$n" -gt 1 ] && label="friend$n"
+  args+=(-e "s/\\b$(esc "$b")\\b/$label/g")
+done
+# Access AUD tags (shown as a 12-character prefix) and IPv4 of public DNS answers.
+args+=(-e 's/AUD [0-9a-f]{12}\.\.\./AUD <aud>/' -e 's/ -> ([0-9]{1,3}\.){3}[0-9]{1,3}$/ -> <address>/')
+args+=(-e 's/\(([0-9]{1,3}\.){3}[0-9]{1,3}\):25/(<address>):25/')
+
+sed -u -E "${args[@]}" | cut -c "1-$cols"
