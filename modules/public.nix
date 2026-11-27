@@ -22,7 +22,13 @@
 }:
 let
   cfg = config.garage.public;
-  inherit (garage) cloudflare t3Port;
+  inherit (garage) cloudflare;
+
+  # Fail closed: if a wake address could not be bound, something else on the
+  # host might answer there, so the tunnel does not run at all.
+  wakeSockets = lib.mapAttrsToList (name: _: "${garage.wakeUnitName name}.socket") (
+    garage.sleepBays publicBays
+  );
 
   publicBays = garage.publicBays bays;
 
@@ -37,7 +43,9 @@ let
     ingress =
       lib.mapAttrsToList (name: b: {
         hostname = garage.publicHostname b;
-        service = "http://${b.ipv4}:${toString t3Port}";
+        # A bay with sleep mode is reached through its wake address on the
+        # host (modules/sleep.nix), which starts it when needed.
+        service = garage.origin b;
         originRequest = {
           connectTimeout = "10s";
           # Reject anything without a valid Access JWT for this bay's app.
@@ -54,9 +62,10 @@ let
   configFile = pkgs.writeText "garage-cloudflared.json" (builtins.toJSON tunnelConfig);
 
   # Addresses cloudflared may reach besides the public internet: the public
-  # bays and the host's DNS resolvers. Everything private is denied.
+  # bays (for a bay with sleep mode only its wake address, one loopback
+  # address) and the host's DNS resolvers. Everything private is denied.
   allowAddrs =
-    map (b: "${b.ipv4}/32") (lib.attrValues publicBays)
+    map (b: "${garage.originAddress b}/32") (lib.attrValues publicBays)
     ++ config.networking.nameservers
     ++ lib.optionals config.services.tailscale.enable [
       # MagicDNS resolver (resolv.conf points here when tailscale manages DNS).
@@ -112,10 +121,12 @@ in
       description = "agent-garage: Cloudflare Tunnel to the public bays";
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
+      requires = wakeSockets;
       after = [
         "network-online.target"
         "garage-nftables.service"
-      ];
+      ]
+      ++ wakeSockets;
       unitConfig.ConditionPathExists = cfg.credentialsFile;
       serviceConfig = {
         ExecStart = lib.concatStringsSep " " [

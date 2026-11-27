@@ -51,6 +51,12 @@ no application code beyond the shell helpers.
   encryption. Friends are told so.
 - **T3's logs keep the Host header of every request** in the bay: its public
   hostname, or any other address the bay was ever opened through.
+- **Sleep mode adds a relay on the host.** A bay with `sleepAfter` is reached
+  through a loopback address of the host that any local process of the host
+  could also connect to (as it can connect to a bay's address directly). It
+  is not reachable from outside the host or from a bay, and `garage test`
+  checks that it listens on loopback only and that the tunnel does not run
+  without it.
 - **Hairpin traffic is not filtered.** A bay without VPN egress can connect
   to the home's own public IP; the router's port forwards decide what that
   reaches.
